@@ -787,3 +787,11 @@ is_ENOTSUP (int err)
 #  define FALLTHROUGH __attribute__ ((__fallthrough__))
 # endif
 #endif
+
+
+static inline bool
+show_json_output (void)
+{
+  const char *json_output = getenv ("JSON_OUTPUT");
+  return json_output != NULL && strcmp (json_output, "1") == 0;
+}

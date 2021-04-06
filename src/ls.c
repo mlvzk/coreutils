@@ -84,6 +84,8 @@
 #include "system.h"
 #include <fnmatch.h>
 
+#include <jansson.h>
+
 #include "acl.h"
 #include "argmatch.h"
 #include "c-strcase.h"
@@ -287,6 +289,7 @@ static void print_dir (char const *name, char const *realname,
                        bool command_line_arg);
 static size_t print_file_name_and_frills (const struct fileinfo *f,
                                           size_t start_col);
+static void print_file_as_json (const struct fileinfo *f);
 static void print_horizontal (void);
 static int format_user_width (uid_t u);
 static int format_group_width (gid_t g);
@@ -4035,6 +4038,7 @@ print_current_files (void)
         {
           print_file_name_and_frills (sorted_file[i], 0);
           putchar ('\n');
+          print_file_as_json (sorted_file[0]);
         }
       break;
 
@@ -4062,6 +4066,7 @@ print_current_files (void)
           set_normal_color ();
           print_long_format (sorted_file[i]);
           DIRED_PUTCHAR ('\n');
+          print_file_as_json (sorted_file[i]);
         }
       break;
     }
@@ -4819,6 +4824,73 @@ print_file_name_and_frills (const struct fileinfo *f, size_t start_col)
   return width;
 }
 
+static void
+print_file_as_json (const struct fileinfo *f)
+{
+  if (!show_json_output())
+    return;
+
+  char modebuf[12];
+  if (f->stat_ok)
+    filemodestring (&f->stat, modebuf);
+  else
+    {
+      modebuf[0] = filetype_letter[f->filetype];
+      memset (modebuf + 1, '?', 10);
+      modebuf[11] = '\0';
+    }
+  if (! any_has_acl)
+    modebuf[10] = '\0';
+  else if (f->acl_type == ACL_T_LSM_CONTEXT_ONLY)
+    modebuf[10] = '.';
+  else if (f->acl_type == ACL_T_YES)
+    modebuf[10] = '+';
+
+  struct timespec when_timespec;
+  bool btime_ok = f->stat_ok;
+  switch (time_type)
+  {
+  case time_ctime:
+    when_timespec = get_stat_ctime (&f->stat);
+    break;
+  case time_mtime:
+    when_timespec = get_stat_mtime (&f->stat);
+    break;
+  case time_atime:
+    when_timespec = get_stat_atime (&f->stat);
+    break;
+  case time_btime:
+    when_timespec = get_stat_btime (&f->stat);
+    if (when_timespec.tv_sec == -1 && when_timespec.tv_nsec == -1)
+      btime_ok = false;
+    break;
+  default:
+    abort ();
+  }
+
+  json_t *json_data = json_pack ("{sssbsiss?sisiss?ss?ss?}",
+                           "filename", f->name,
+                           "has_stat", f->stat_ok,
+                           "size", f->stat_ok ? f->stat.st_size : -1,
+                           "mode_pretty", f->stat_ok ? modebuf : NULL,
+                           "mode", f->stat_ok ? f->stat.st_mode : -1,
+                           "time", btime_ok ? when_timespec.tv_sec : -1,
+                           "user", f->stat_ok ? getuser(f->stat.st_uid) : NULL,
+                           "group", f->stat_ok ? getgroup(f->stat.st_gid) : NULL,
+                           "link", f->linkname);
+  if (json_data == NULL)
+    {
+      fprintf (stderr, "::JSON:{ \"error\": \"Failed to encode file to JSON\" }\n");
+      return;
+    }
+
+  char *json_encoded = json_dumps (json_data, JSON_COMPACT);
+  printf ("::JSON:%s\n", json_encoded);
+  free (json_encoded);
+  free (json_data);
+}
+
+
 /* Given these arguments describing a file, return the single-byte
    type indicator, or 0.  */
 static char
@@ -5078,6 +5150,12 @@ print_many_per_line (void)
         }
       putchar ('\n');
     }
+
+  for (size_t filesno = 0; filesno < cwd_n_used; filesno++)
+    {
+      struct fileinfo const *f = sorted_file[filesno];
+      print_file_as_json (f);
+    }
 }
 
 static void
@@ -5117,6 +5195,12 @@ print_horizontal (void)
       max_name_length = line_fmt->col_arr[col];
     }
   putchar ('\n');
+
+  for (filesno = 0; filesno < cwd_n_used; filesno++)
+    {
+      f = sorted_file[filesno];
+      print_file_as_json (f);
+    }
 }
 
 /* Output name + SEP + ' '.  */
@@ -5157,6 +5241,12 @@ print_with_separator (char sep)
       pos += len;
     }
   putchar ('\n');
+
+  for (filesno = 0; filesno < cwd_n_used; filesno++)
+    {
+      struct fileinfo const *f = sorted_file[filesno];
+      print_file_as_json (f);
+    }
 }
 
 /* Assuming cursor is at position FROM, indent up to position TO.
